@@ -125,6 +125,17 @@ main { padding: 0.8rem 1rem 4rem; }
 .card-checkbox label svg { width: 14px; height: 14px; opacity: 0; color: #fff; transition: opacity 0.15s; }
 
 .card-body { flex: 1; min-width: 0; }
+.card-actions { flex-shrink: 0; margin-top: 0.15rem; }
+.card-actions button {
+  width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
+  border: none; background: transparent; border-radius: 50%; cursor: pointer;
+  color: var(--border); transition: color 0.15s, background 0.15s;
+}
+.card-actions button:hover { color: var(--text-secondary); background: rgba(0,0,0,0.04); }
+.card-actions button:active { transform: scale(0.9); }
+.card-actions button svg { width: 16px; height: 16px; }
+.card.hidden-card { opacity: 0.4; }
+.card.hidden-card .card-title { text-decoration: line-through; text-decoration-color: #a09a94; }
 .card-museum {
   font-size: 0.75rem; font-weight: 600; text-transform: uppercase;
   letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 0.15rem;
@@ -231,7 +242,7 @@ let accessToken = null;
 let db = [];            // cumulative DB: [{Museum, Exhibition, FromDate, ToDate, "Free?", visited}, ...]
 let dbFileId = null;
 let displayList = [];   // processed for display (filtered, sorted, active only)
-let activeFilter = 'all';
+let activeFilter = 'not-visited';
 let saveTimeout = null;
 let lastImportInfo = '';
 
@@ -463,6 +474,9 @@ function processForDisplay() {
 
 function getFiltered() {
   let list = displayList;
+  if (activeFilter === 'hidden') return list.filter(e => e.hidden);
+  // All other filters exclude hidden
+  list = list.filter(e => !e.hidden);
   if (activeFilter === 'free') list = list.filter(e => e['Free?']);
   if (activeFilter === 'visited') list = list.filter(e => e.visited);
   if (activeFilter === 'not-visited') list = list.filter(e => !e.visited);
@@ -479,15 +493,18 @@ function daysUntil(d) {
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function renderFilters() {
-  const total = displayList.length;
-  const freeCount = displayList.filter(e => e['Free?']).length;
-  const visitedCount = displayList.filter(e => e.visited).length;
+  const active = displayList.filter(e => !e.hidden);
+  const total = active.length;
+  const freeCount = active.filter(e => e['Free?']).length;
+  const visitedCount = active.filter(e => e.visited).length;
+  const hiddenCount = displayList.filter(e => e.hidden).length;
   const chips = [
     { id: 'all', label: 'All', count: total },
     { id: 'free', label: 'Free', count: freeCount },
     { id: 'not-visited', label: 'To Visit', count: total - visitedCount },
     { id: 'visited', label: 'Visited', count: visitedCount },
   ];
+  if (hiddenCount > 0) chips.push({ id: 'hidden', label: 'Hidden', count: hiddenCount });
   document.getElementById('filters').innerHTML = chips.map(c =>
     '<button class="filter-chip ' + (activeFilter === c.id ? 'active' : '') + '" onclick="setFilter(\'' + c.id + '\')">' +
       c.label + ' <span class="chip-count">' + c.count + '</span></button>'
@@ -503,13 +520,29 @@ function renderCard(ex, delay) {
   if (ex['Free?']) badges += '<span class="card-badge free">Free</span>';
   if (ex.started && dEnd <= 14) badges += '<span class="card-badge ending-soon">Ends in ' + dEnd + 'd</span>';
   if (!ex.started && dStart <= 14) badges += '<span class="card-badge opens-soon">Opens in ' + dStart + 'd</span>';
-  return '<div class="card ' + (ex.visited ? 'visited' : '') + '" style="animation-delay:' + delay + 'ms">' +
+
+  const isHiddenView = activeFilter === 'hidden';
+  const cardClass = isHiddenView ? 'card hidden-card' : 'card' + (ex.visited ? ' visited' : '');
+
+  // Restore button for hidden view, bin button for normal view
+  const actionBtn = isHiddenView
+    ? '<div class="card-actions"><button onclick="toggleHidden(\'' + safeKey + '\',false)" title="Restore">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1014.85-3.36L23 10"/></svg></button></div>'
+    : '<div class="card-actions"><button onclick="toggleHidden(\'' + safeKey + '\',true)" title="Hide">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button></div>';
+
+  // Hide checkbox in hidden view
+  const checkbox = isHiddenView ? '' :
     '<div class="card-checkbox"><input type="checkbox" id="' + id + '" ' + (ex.visited ? 'checked' : '') +
     ' onchange="toggleVisited(\'' + safeKey + '\',this.checked)"><label for="' + id + '">' +
-    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></label></div>' +
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></label></div>';
+
+  return '<div class="' + cardClass + '" style="animation-delay:' + delay + 'ms">' +
+    checkbox +
     '<div class="card-body"><div class="card-museum">' + esc(ex.Museum) + '</div>' +
     '<div class="card-title">' + esc(ex.Exhibition) + '</div>' +
-    '<div class="card-meta"><span class="card-dates">' + fmtDate(ex.FromDate) + ' \u2014 ' + fmtDate(ex.ToDate) + '</span>' + badges + '</div></div></div>';
+    '<div class="card-meta"><span class="card-dates">' + fmtDate(ex.FromDate) + ' \u2014 ' + fmtDate(ex.ToDate) + '</span>' + badges + '</div></div>' +
+    actionBtn + '</div>';
 }
 
 function renderList() {
@@ -543,6 +576,14 @@ function toggleVisited(key, checked) {
   if (entry) entry.visited = checked;
   renderAll();
   debouncedSave();
+}
+
+function toggleHidden(key, hidden) {
+  const entry = db.find(ex => makeKey(ex) === key);
+  if (entry) entry.hidden = hidden;
+  renderAll();
+  debouncedSave();
+  showToast(hidden ? 'Exhibition hidden' : 'Exhibition restored');
 }
 
 // ─── UI helpers ───
