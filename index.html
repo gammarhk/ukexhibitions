@@ -36,7 +36,6 @@ body {
   min-height: 100dvh; -webkit-font-smoothing: antialiased;
 }
 
-/* ── Auth & Loading ── */
 #auth-screen, #loading-screen {
   display: flex; flex-direction: column; align-items: center;
   justify-content: center; min-height: 100dvh; padding: 2rem; text-align: center;
@@ -60,7 +59,6 @@ body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
-/* ── Header ── */
 header {
   position: sticky; top: 0; z-index: 100;
   background: rgba(244,241,235,0.85); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
@@ -97,7 +95,6 @@ header {
 }
 .filter-chip.active .chip-count { background: rgba(255,255,255,0.2); }
 
-/* ── Main ── */
 main { padding: 0.8rem 1rem 4rem; }
 
 .section-label {
@@ -106,7 +103,6 @@ main { padding: 0.8rem 1rem 4rem; }
 }
 .section-label:first-child { margin-top: 0.4rem; }
 
-/* ── Card ── */
 .card {
   background: var(--bg-card); border-radius: var(--radius); padding: 0.9rem 1rem;
   margin-bottom: 0.5rem; box-shadow: var(--shadow); display: flex; gap: 0.8rem;
@@ -148,7 +144,6 @@ main { padding: 0.8rem 1rem 4rem; }
 .empty-state { text-align: center; padding: 3rem 1rem; color: var(--text-secondary); }
 .empty-state p { font-size: 0.95rem; }
 
-/* ── Toast ── */
 .toast {
   position: fixed; bottom: 3.5rem; left: 50%; transform: translateX(-50%) translateY(100%);
   background: var(--text); color: #fff; padding: 0.6rem 1.2rem;
@@ -158,7 +153,6 @@ main { padding: 0.8rem 1rem 4rem; }
 }
 .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
 
-/* ── Sync bar ── */
 .sync-bar {
   position: fixed; bottom: 0; left: 0; right: 0;
   background: rgba(244,241,235,0.9); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px);
@@ -182,7 +176,6 @@ main { padding: 0.8rem 1rem 4rem; }
 </head>
 <body>
 
-<!-- Auth Screen -->
 <div id="auth-screen">
   <h1>UK Exhibitions</h1>
   <p>Track current &amp; upcoming exhibitions<br>across UK museums</p>
@@ -192,14 +185,12 @@ main { padding: 0.8rem 1rem 4rem; }
   </button>
 </div>
 
-<!-- Loading Screen -->
 <div id="loading-screen" style="display:none">
   <h1>UK Exhibitions</h1>
   <div class="spinner"></div>
   <p id="loading-text">Loading\u2026</p>
 </div>
 
-<!-- App -->
 <div id="app" style="display:none">
   <header>
     <div class="header-top">
@@ -215,9 +206,7 @@ main { padding: 0.8rem 1rem 4rem; }
     </div>
     <div class="filters" id="filters"></div>
   </header>
-
   <main id="exhibition-list"></main>
-
   <div class="sync-bar">
     <div class="sync-bar-inner">
       <span><span class="sync-dot" id="sync-dot"></span><span id="sync-text">Synced</span></span>
@@ -226,7 +215,6 @@ main { padding: 0.8rem 1rem 4rem; }
   </div>
 </div>
 
-<!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script>
@@ -235,18 +223,17 @@ const CLIENT_ID = '254726805331-s8n400uimdiqioij2m3v0h22523csr11.apps.googleuser
 const SCOPES = 'https://www.googleapis.com/auth/drive https://www.googleapis.com/auth/drive.appdata https://www.googleapis.com/auth/spreadsheets.readonly';
 const REDIRECT_URI = location.origin + location.pathname;
 const DRIVE_FOLDER_NAME = 'ukexhibitions';
-const IMPORT_SHEET_NAME = 'ukexhibitions'; // Gemini creates a sheet with this name
-const VISITED_FILENAME = 'visited.json';
+const IMPORT_SHEET_NAME = 'ukexhibitions';
+const DB_FILENAME = 'exhibitions_db.json';
 
 // ─── State ───
 let accessToken = null;
-let exhibitions = [];
-let visited = new Set();
-let visitedFileId = null;
+let db = [];            // cumulative DB: [{Museum, Exhibition, FromDate, ToDate, "Free?", visited}, ...]
+let dbFileId = null;
+let displayList = [];   // processed for display (filtered, sorted, active only)
 let activeFilter = 'all';
-let exhibitionsFileName = '';
-let exhibitionsFileModified = '';
 let saveTimeout = null;
+let lastImportInfo = '';
 
 // ─── Auth ───
 function handleSignIn() {
@@ -256,14 +243,12 @@ function handleSignIn() {
   });
   window.location.href = 'https://accounts.google.com/o/oauth2/v2/auth?' + params;
 }
-
 function handleSignOut() {
   accessToken = null;
   localStorage.removeItem('ukex_token');
   localStorage.removeItem('ukex_token_exp');
   show('auth-screen');
 }
-
 function parseHashToken() {
   const hash = window.location.hash.substring(1);
   const params = new URLSearchParams(hash);
@@ -278,7 +263,6 @@ function parseHashToken() {
   }
   return false;
 }
-
 function checkStoredToken() {
   const token = localStorage.getItem('ukex_token');
   const exp = localStorage.getItem('ukex_token_exp');
@@ -286,7 +270,7 @@ function checkStoredToken() {
   return false;
 }
 
-// ─── Drive API helpers ───
+// ─── Drive helpers ───
 async function driveApi(path, opts = {}) {
   const res = await fetch('https://www.googleapis.com/drive/v3/' + path, {
     ...opts,
@@ -296,21 +280,14 @@ async function driveApi(path, opts = {}) {
   if (!res.ok) throw new Error('Drive API ' + res.status + ': ' + (await res.text()));
   return res;
 }
+async function driveJson(path, opts) { return (await driveApi(path, opts)).json(); }
 
-async function driveJson(path, opts) {
-  return (await driveApi(path, opts)).json();
-}
-
-// ─── Get or create the ukexhibitions folder ───
 let _folderId = null;
 async function getOrCreateFolder() {
   if (_folderId) return _folderId;
   const q = "name='" + DRIVE_FOLDER_NAME + "' and mimeType='application/vnd.google-apps.folder' and trashed=false";
   const folders = await driveJson('files?' + new URLSearchParams({ q, fields: 'files(id)', spaces: 'drive' }));
-  if (folders.files && folders.files.length > 0) {
-    _folderId = folders.files[0].id;
-    return _folderId;
-  }
+  if (folders.files && folders.files.length > 0) { _folderId = folders.files[0].id; return _folderId; }
   const res = await driveApi('files', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ name: DRIVE_FOLDER_NAME, mimeType: 'application/vnd.google-apps.folder' })
@@ -319,52 +296,73 @@ async function getOrCreateFolder() {
   return _folderId;
 }
 
-// ─── Auto-import: scan for a Sheet named "ukexhibitions" outside the folder ───
-async function autoImport() {
-  const folderId = await getOrCreateFolder();
+// ─── DB: exhibitions_db.json in appDataFolder ───
+function makeKey(ex) { return ex.Museum + '::' + ex.Exhibition; }
 
-  // Find any Google Sheet named exactly "ukexhibitions" that is NOT in the folder
-  const q = "name='" + IMPORT_SHEET_NAME + "' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and not '" + folderId + "' in parents";
-  const result = await driveJson('files?' + new URLSearchParams({
-    q, fields: 'files(id,name,parents,modifiedTime)', orderBy: 'modifiedTime desc',
-    pageSize: '5', spaces: 'drive'
-  }));
-
-  if (!result.files || result.files.length === 0) return false;
-
-  // Process each found sheet (there might be multiple if Gemini created several)
-  let imported = 0;
-  for (const file of result.files) {
-    try {
-      // Validate it has the right columns
-      await readSheetData(file.id);
-
-      // Rename to exhibitions_YYYYMMDD (add HHmm if multiple on same day)
-      const now = new Date();
-      const pad = (n) => String(n).padStart(2, '0');
-      const newName = 'exhibitions_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) +
-        (imported > 0 ? '_' + pad(now.getHours()) + pad(now.getMinutes()) : '');
-
-      // Move to folder + rename
-      const oldParents = (file.parents || []).join(',');
-      const params = new URLSearchParams({ addParents: folderId });
-      if (oldParents) params.set('removeParents', oldParents);
-
-      await driveApi('files/' + file.id + '?' + params, {
-        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ name: newName })
-      });
-
-      imported++;
-    } catch (e) {
-      console.warn('Skipped sheet ' + file.name + ':', e.message);
+async function loadDb() {
+  try {
+    const q = "name='" + DB_FILENAME + "' and trashed=false";
+    const result = await driveJson('files?' + new URLSearchParams({ q, spaces: 'appDataFolder', fields: 'files(id)' }));
+    if (result.files && result.files.length > 0) {
+      dbFileId = result.files[0].id;
+      const content = await driveApi('files/' + dbFileId + '?alt=media');
+      return await content.json();
     }
-  }
+  } catch (e) { console.warn('Could not load DB:', e); }
+  return [];
+}
 
-  if (imported > 0) {
-    showToast('Imported ' + imported + ' new sheet' + (imported > 1 ? 's' : '') + ' from Gemini');
-  }
-  return imported > 0;
+async function saveDb() {
+  setSyncStatus('syncing');
+  try {
+    const body = JSON.stringify(db);
+    if (dbFileId) {
+      await fetch('https://www.googleapis.com/upload/drive/v3/files/' + dbFileId + '?uploadType=media', {
+        method: 'PATCH',
+        headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body
+      });
+    } else {
+      const metadata = { name: DB_FILENAME, parents: ['appDataFolder'], mimeType: 'application/json' };
+      const form = new FormData();
+      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
+      form.append('file', new Blob([body], { type: 'application/json' }));
+      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+        method: 'POST', headers: { Authorization: 'Bearer ' + accessToken }, body: form
+      });
+      dbFileId = (await res.json()).id;
+    }
+    setSyncStatus('ok');
+  } catch (e) { console.error('Save DB failed:', e); setSyncStatus('error'); }
+}
+
+function debouncedSave() { clearTimeout(saveTimeout); saveTimeout = setTimeout(saveDb, 600); }
+
+// ─── Merge: upsert new sheet data into DB ───
+function mergeIntoDb(newExhibitions) {
+  const dbMap = new Map();
+  db.forEach(ex => dbMap.set(makeKey(ex), ex));
+
+  let added = 0, updated = 0;
+  newExhibitions.forEach(ex => {
+    const key = makeKey(ex);
+    const existing = dbMap.get(key);
+    if (existing) {
+      // Update dates and free status, preserve visited
+      if (existing.FromDate !== ex.FromDate || existing.ToDate !== ex.ToDate || existing['Free?'] !== ex['Free?']) {
+        existing.FromDate = ex.FromDate;
+        existing.ToDate = ex.ToDate;
+        existing['Free?'] = ex['Free?'];
+        updated++;
+      }
+    } else {
+      // New exhibition
+      dbMap.set(key, { ...ex, visited: false });
+      added++;
+    }
+  });
+
+  db = Array.from(dbMap.values());
+  return { added, updated };
 }
 
 // ─── Read sheet data via Sheets API ───
@@ -376,7 +374,6 @@ async function readSheetData(sheetId) {
   if (sheetsRes.status === 401) { handleSignOut(); throw new Error('Auth expired'); }
   if (!sheetsRes.ok) throw new Error('Sheets API ' + sheetsRes.status);
   const sheetsData = await sheetsRes.json();
-
   const rows = sheetsData.values || [];
   if (rows.length < 2) return [];
 
@@ -400,70 +397,62 @@ async function readSheetData(sheetId) {
   });
 }
 
-// ─── Load exhibitions from latest Sheet in folder ───
-async function loadExhibitions() {
+// ─── Auto-import: scan, merge, move ───
+async function autoImport() {
   const folderId = await getOrCreateFolder();
-  const fileQ = "'" + folderId + "' in parents and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false";
-  const files = await driveJson('files?' + new URLSearchParams({
-    q: fileQ, fields: 'files(id,name,modifiedTime)', orderBy: 'modifiedTime desc',
-    pageSize: '1', spaces: 'drive'
+  const q = "name='" + IMPORT_SHEET_NAME + "' and mimeType='application/vnd.google-apps.spreadsheet' and trashed=false and not '" + folderId + "' in parents";
+  const result = await driveJson('files?' + new URLSearchParams({
+    q, fields: 'files(id,name,parents,modifiedTime)', orderBy: 'modifiedTime desc',
+    pageSize: '5', spaces: 'drive'
   }));
-  if (!files.files || files.files.length === 0) throw new Error('no-sheets');
-  const file = files.files[0];
-  exhibitionsFileName = file.name;
-  exhibitionsFileModified = file.modifiedTime;
-  return readSheetData(file.id);
-}
 
-// ─── Visited state (appDataFolder) ───
-async function loadVisited() {
-  try {
-    const q = "name='" + VISITED_FILENAME + "' and trashed=false";
-    const result = await driveJson('files?' + new URLSearchParams({
-      q, spaces: 'appDataFolder', fields: 'files(id,name)'
-    }));
-    if (result.files && result.files.length > 0) {
-      visitedFileId = result.files[0].id;
-      const content = await driveApi('files/' + visitedFileId + '?alt=media');
-      return new Set(await content.json());
-    }
-  } catch (e) { console.warn('Could not load visited:', e); }
-  return new Set();
-}
+  if (!result.files || result.files.length === 0) return false;
 
-async function saveVisited() {
-  setSyncStatus('syncing');
-  try {
-    const body = JSON.stringify([...visited]);
-    if (visitedFileId) {
-      await fetch('https://www.googleapis.com/upload/drive/v3/files/' + visitedFileId + '?uploadType=media', {
-        method: 'PATCH',
-        headers: { Authorization: 'Bearer ' + accessToken, 'Content-Type': 'application/json' }, body
+  let totalAdded = 0, totalUpdated = 0, imported = 0;
+
+  for (const file of result.files) {
+    try {
+      const newData = await readSheetData(file.id);
+      const { added, updated } = mergeIntoDb(newData);
+      totalAdded += added;
+      totalUpdated += updated;
+
+      // Rename + move to archive folder
+      const now = new Date();
+      const pad = (n) => String(n).padStart(2, '0');
+      const newName = 'exhibitions_' + now.getFullYear() + pad(now.getMonth() + 1) + pad(now.getDate()) +
+        (imported > 0 ? '_' + pad(now.getHours()) + pad(now.getMinutes()) : '');
+      const oldParents = (file.parents || []).join(',');
+      const params = new URLSearchParams({ addParents: folderId });
+      if (oldParents) params.set('removeParents', oldParents);
+      await driveApi('files/' + file.id + '?' + params, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: newName })
       });
-    } else {
-      const metadata = { name: VISITED_FILENAME, parents: ['appDataFolder'], mimeType: 'application/json' };
-      const form = new FormData();
-      form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-      form.append('file', new Blob([body], { type: 'application/json' }));
-      const res = await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
-        method: 'POST', headers: { Authorization: 'Bearer ' + accessToken }, body: form
-      });
-      visitedFileId = (await res.json()).id;
-    }
-    setSyncStatus('ok');
-  } catch (e) { console.error('Save visited failed:', e); setSyncStatus('error'); }
+
+      lastImportInfo = newName;
+      imported++;
+    } catch (e) { console.warn('Skipped sheet ' + file.name + ':', e.message); }
+  }
+
+  if (imported > 0) {
+    await saveDb();
+    const parts = [];
+    if (totalAdded > 0) parts.push(totalAdded + ' new');
+    if (totalUpdated > 0) parts.push(totalUpdated + ' updated');
+    showToast('Imported: ' + (parts.length > 0 ? parts.join(', ') : 'no changes'));
+  }
+  return imported > 0;
 }
 
-function debouncedSave() { clearTimeout(saveTimeout); saveTimeout = setTimeout(saveVisited, 600); }
-
-// ─── Processing ───
+// ─── Processing for display ───
 function today() { return new Date().toISOString().slice(0, 10); }
 
-function processExhibitions(raw) {
+function processForDisplay() {
   const t = today();
-  return raw
+  displayList = db
     .filter(ex => ex.ToDate >= t && ex.FromDate && ex.ToDate)
-    .map(ex => ({ ...ex, started: ex.FromDate <= t, key: ex.Museum + '::' + ex.Exhibition }))
+    .map(ex => ({ ...ex, started: ex.FromDate <= t, key: makeKey(ex) }))
     .sort((a, b) => {
       if (a.started && !b.started) return -1;
       if (!a.started && b.started) return 1;
@@ -473,10 +462,10 @@ function processExhibitions(raw) {
 }
 
 function getFiltered() {
-  let list = exhibitions;
+  let list = displayList;
   if (activeFilter === 'free') list = list.filter(e => e['Free?']);
-  if (activeFilter === 'visited') list = list.filter(e => visited.has(e.key));
-  if (activeFilter === 'not-visited') list = list.filter(e => !visited.has(e.key));
+  if (activeFilter === 'visited') list = list.filter(e => e.visited);
+  if (activeFilter === 'not-visited') list = list.filter(e => !e.visited);
   return list;
 }
 
@@ -490,9 +479,9 @@ function daysUntil(d) {
 function esc(s) { const d = document.createElement('div'); d.textContent = s; return d.innerHTML; }
 
 function renderFilters() {
-  const total = exhibitions.length;
-  const freeCount = exhibitions.filter(e => e['Free?']).length;
-  const visitedCount = exhibitions.filter(e => visited.has(e.key)).length;
+  const total = displayList.length;
+  const freeCount = displayList.filter(e => e['Free?']).length;
+  const visitedCount = displayList.filter(e => e.visited).length;
   const chips = [
     { id: 'all', label: 'All', count: total },
     { id: 'free', label: 'Free', count: freeCount },
@@ -506,7 +495,6 @@ function renderFilters() {
 }
 
 function renderCard(ex, delay) {
-  const isVisited = visited.has(ex.key);
   const dEnd = daysUntil(ex.ToDate);
   const dStart = daysUntil(ex.FromDate);
   const safeKey = ex.key.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
@@ -515,8 +503,8 @@ function renderCard(ex, delay) {
   if (ex['Free?']) badges += '<span class="card-badge free">Free</span>';
   if (ex.started && dEnd <= 14) badges += '<span class="card-badge ending-soon">Ends in ' + dEnd + 'd</span>';
   if (!ex.started && dStart <= 14) badges += '<span class="card-badge opens-soon">Opens in ' + dStart + 'd</span>';
-  return '<div class="card ' + (isVisited ? 'visited' : '') + '" style="animation-delay:' + delay + 'ms">' +
-    '<div class="card-checkbox"><input type="checkbox" id="' + id + '" ' + (isVisited ? 'checked' : '') +
+  return '<div class="card ' + (ex.visited ? 'visited' : '') + '" style="animation-delay:' + delay + 'ms">' +
+    '<div class="card-checkbox"><input type="checkbox" id="' + id + '" ' + (ex.visited ? 'checked' : '') +
     ' onchange="toggleVisited(\'' + safeKey + '\',this.checked)"><label for="' + id + '">' +
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></label></div>' +
     '<div class="card-body"><div class="card-museum">' + esc(ex.Museum) + '</div>' +
@@ -545,11 +533,16 @@ function renderList() {
   el.innerHTML = html;
 }
 
+function renderAll() { processForDisplay(); renderFilters(); renderList(); }
+
 // ─── Interactions ───
 function setFilter(f) { activeFilter = f; renderFilters(); renderList(); }
+
 function toggleVisited(key, checked) {
-  if (checked) visited.add(key); else visited.delete(key);
-  renderFilters(); renderList(); debouncedSave();
+  const entry = db.find(ex => makeKey(ex) === key);
+  if (entry) entry.visited = checked;
+  renderAll();
+  debouncedSave();
 }
 
 // ─── UI helpers ───
@@ -559,13 +552,9 @@ function setSyncStatus(status) {
   dot.className = 'sync-dot' + (status === 'error' ? ' error' : status === 'syncing' ? ' syncing' : '');
   text.textContent = status === 'ok' ? 'Synced' : status === 'syncing' ? 'Syncing\u2026' : 'Sync error';
 }
-
 function updateFileInfo() {
   const el = document.getElementById('file-info');
-  if (exhibitionsFileName) {
-    const d = new Date(exhibitionsFileModified);
-    el.textContent = exhibitionsFileName + ' \u00b7 ' + d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
-  }
+  el.textContent = db.length + ' exhibitions in DB';
 }
 
 let toastTimer;
@@ -576,19 +565,14 @@ function showToast(msg) {
   clearTimeout(toastTimer);
   toastTimer = setTimeout(() => el.classList.remove('show'), 3000);
 }
-
-function setLoadingText(msg) {
-  const el = document.getElementById('loading-text');
-  if (el) el.textContent = msg;
-}
-
+function setLoadingText(msg) { const el = document.getElementById('loading-text'); if (el) el.textContent = msg; }
 function show(id) {
   ['auth-screen', 'loading-screen', 'app'].forEach(s => {
     document.getElementById(s).style.display = s === id ? '' : 'none';
   });
 }
 
-// ─── Refresh (auto-import then load) ───
+// ─── Refresh ───
 async function refreshData() {
   const btn = document.getElementById('refresh-btn');
   btn.style.pointerEvents = 'none';
@@ -596,17 +580,10 @@ async function refreshData() {
   try {
     setSyncStatus('syncing');
     await autoImport();
-    const raw = await loadExhibitions();
-    exhibitions = processExhibitions(raw);
-    renderFilters(); renderList(); updateFileInfo(); setSyncStatus('ok');
+    renderAll(); updateFileInfo(); setSyncStatus('ok');
   } catch (e) {
     console.error('Refresh failed:', e);
-    if (e.message === 'no-sheets') {
-      document.getElementById('exhibition-list').innerHTML =
-        '<div class="empty-state"><p>No exhibition data yet</p>' +
-        '<p style="margin-top:0.3rem;font-size:0.85rem;color:var(--text-secondary)">Ask Gemini to create a sheet called <strong>ukexhibitions</strong></p></div>';
-      setSyncStatus('ok');
-    } else { setSyncStatus('error'); }
+    setSyncStatus('error');
   }
   btn.style.pointerEvents = '';
   btn.querySelector('svg').style.animation = '';
@@ -622,32 +599,32 @@ async function init() {
 async function bootstrap() {
   show('loading-screen');
   try {
+    setLoadingText('Loading database\u2026');
+    db = await loadDb();
+
     setLoadingText('Scanning for new sheets\u2026');
     await autoImport();
 
-    setLoadingText('Loading exhibitions\u2026');
-    const [raw, vis] = await Promise.all([loadExhibitions(), loadVisited()]);
-    visited = vis;
-    exhibitions = processExhibitions(raw);
-    show('app'); renderFilters(); renderList(); updateFileInfo(); setSyncStatus('ok');
+    show('app');
+    renderAll();
+    updateFileInfo();
+    setSyncStatus('ok');
+
+    if (db.length === 0) {
+      document.getElementById('exhibition-list').innerHTML =
+        '<div class="empty-state"><p>No exhibition data yet</p>' +
+        '<p style="margin-top:0.3rem;font-size:0.85rem;color:var(--text-secondary)">Ask Gemini to create a sheet called <strong>ukexhibitions</strong></p></div>';
+    }
   } catch (e) {
     console.error('Bootstrap failed:', e);
     if (e.message.includes('Auth expired') || e.message.includes('401')) {
       handleSignOut();
     } else {
-      visited = await loadVisited().catch(() => new Set());
       show('app');
-      if (e.message === 'no-sheets') {
-        document.getElementById('exhibition-list').innerHTML =
-          '<div class="empty-state"><p>No exhibition data yet</p>' +
-          '<p style="margin-top:0.3rem;font-size:0.85rem;color:var(--text-secondary)">Ask Gemini to create a sheet called <strong>ukexhibitions</strong></p></div>';
-        renderFilters(); setSyncStatus('ok');
-      } else {
-        document.getElementById('exhibition-list').innerHTML =
-          '<div class="empty-state"><p>' + esc(e.message) + '</p>' +
-          '<p style="margin-top:0.5rem"><button class="sign-in-btn" onclick="refreshData()">Retry</button></p></div>';
-        setSyncStatus('error');
-      }
+      document.getElementById('exhibition-list').innerHTML =
+        '<div class="empty-state"><p>' + esc(e.message) + '</p>' +
+        '<p style="margin-top:0.5rem"><button class="sign-in-btn" onclick="refreshData()">Retry</button></p></div>';
+      setSyncStatus('error');
     }
   }
 }
