@@ -456,8 +456,35 @@ function deduplicateDb() {
     }
   });
 
+  // Second pass: prefix matching within same museum + same dates
+  const entries = Array.from(seen.values());
+  const toRemove = new Set();
+
+  for (let i = 0; i < entries.length; i++) {
+    if (toRemove.has(i)) continue;
+    for (let j = i + 1; j < entries.length; j++) {
+      if (toRemove.has(j)) continue;
+      const a = entries[i], b = entries[j];
+      // Same normalized museum + same dates
+      if (normalizeMuseum(a.Museum) !== normalizeMuseum(b.Museum)) continue;
+      if (a.FromDate !== b.FromDate || a.ToDate !== b.ToDate) continue;
+      // Check if one normalized name is a prefix of the other
+      const na = normalizeText(a.Exhibition);
+      const nb = normalizeText(b.Exhibition);
+      if (na.startsWith(nb) || nb.startsWith(na)) {
+        // Merge j into i (keep longer name)
+        if (b.Exhibition.length > a.Exhibition.length) a.Exhibition = b.Exhibition;
+        if (b.visited) a.visited = true;
+        if (b.hidden) a.hidden = true;
+        toRemove.add(j);
+        changed = true;
+      }
+    }
+  }
+
   if (changed) {
-    db = Array.from(seen.values());
+    db = entries.filter((_, i) => !toRemove.has(i));
+    // Rebuild the seen map with updated keys
   }
   return changed;
 }
@@ -470,7 +497,25 @@ function mergeIntoDb(newExhibitions) {
   let added = 0, updated = 0;
   newExhibitions.forEach(ex => {
     const key = makeKey(ex);
-    const existing = dbMap.get(key);
+    const normMuseum = normalizeMuseum(ex.Museum);
+    const normExName = normalizeText(ex.Exhibition);
+
+    // Try exact key match first
+    let existing = dbMap.get(key);
+
+    // Fallback: prefix match within same museum + same dates
+    if (!existing) {
+      for (const dbEx of dbMap.values()) {
+        if (normalizeMuseum(dbEx.Museum) !== normMuseum) continue;
+        if (dbEx.FromDate !== ex.FromDate || dbEx.ToDate !== ex.ToDate) continue;
+        const dbNorm = normalizeText(dbEx.Exhibition);
+        if (dbNorm.startsWith(normExName) || normExName.startsWith(dbNorm)) {
+          existing = dbEx;
+          break;
+        }
+      }
+    }
+
     if (existing) {
       // Update dates and free status, preserve visited/hidden
       if (existing.FromDate !== ex.FromDate || existing.ToDate !== ex.ToDate || existing['Free?'] !== ex['Free?']) {
@@ -479,8 +524,7 @@ function mergeIntoDb(newExhibitions) {
         existing['Free?'] = ex['Free?'];
         updated++;
       }
-      // Normalize museum name on existing entries too
-      existing.Museum = normalizeMuseum(ex.Museum);
+      existing.Museum = normMuseum;
       // Keep the longer (more descriptive) exhibition name
       if (ex.Exhibition.trim().length > existing.Exhibition.length) {
         existing.Exhibition = ex.Exhibition.trim();
@@ -488,7 +532,7 @@ function mergeIntoDb(newExhibitions) {
     } else {
       // New exhibition — store with normalized museum name
       dbMap.set(key, {
-        Museum: normalizeMuseum(ex.Museum),
+        Museum: normMuseum,
         Exhibition: ex.Exhibition.trim(),
         FromDate: ex.FromDate,
         ToDate: ex.ToDate,
