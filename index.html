@@ -308,7 +308,88 @@ async function getOrCreateFolder() {
 }
 
 // ─── DB: exhibitions_db.json in appDataFolder ───
-function makeKey(ex) { return ex.Museum + '::' + ex.Exhibition; }
+
+// Museum name normalization map
+const MUSEUM_ALIASES = {
+  'barbican': 'Barbican',
+  'barbican centre': 'Barbican',
+  'barbican art gallery': 'Barbican',
+  'barbican gallery': 'Barbican',
+  'v&a': 'V&A South Kensington',
+  'v&a south kensington': 'V&A South Kensington',
+  'victoria and albert museum': 'V&A South Kensington',
+  'v&a east': 'V&A East Museum',
+  'v&a east museum': 'V&A East Museum',
+  'v&a east storehouse': 'V&A East Storehouse',
+  'young v&a': 'Young V&A',
+  'tate modern': 'Tate Modern',
+  'tate britain': 'Tate Britain',
+  'tate': 'Tate Modern',
+  'national gallery': 'National Gallery',
+  'the national gallery': 'National Gallery',
+  'national gallery london': 'National Gallery',
+  'national portrait gallery': 'National Portrait Gallery',
+  'npg': 'National Portrait Gallery',
+  'british museum': 'British Museum',
+  'the british museum': 'British Museum',
+  'science museum': 'Science Museum',
+  'natural history museum': 'Natural History Museum',
+  'nhm': 'Natural History Museum',
+  'the king\'s gallery': 'The King\'s Gallery',
+  'king\'s gallery': 'The King\'s Gallery',
+  'kings gallery': 'The King\'s Gallery',
+  'the queen\'s gallery': 'The King\'s Gallery',
+  'queen\'s gallery': 'The King\'s Gallery',
+  'queens gallery': 'The King\'s Gallery',
+  'royal academy': 'Royal Academy',
+  'royal academy of arts': 'Royal Academy',
+  'ra': 'Royal Academy',
+  'hayward gallery': 'Hayward Gallery',
+  'design museum': 'Design Museum',
+  'the design museum': 'Design Museum',
+  'serpentine': 'Serpentine',
+  'serpentine gallery': 'Serpentine',
+  'serpentine galleries': 'Serpentine',
+  'serpentine north': 'Serpentine',
+  'serpentine south': 'Serpentine',
+  'whitechapel gallery': 'Whitechapel Gallery',
+  'whitechapel': 'Whitechapel Gallery',
+  'wellcome collection': 'Wellcome Collection',
+  'wellcome': 'Wellcome Collection',
+  'courtauld gallery': 'Courtauld Gallery',
+  'the courtauld': 'Courtauld Gallery',
+  'courtauld': 'Courtauld Gallery',
+  'dulwich picture gallery': 'Dulwich Picture Gallery',
+  'dulwich': 'Dulwich Picture Gallery',
+  'wallace collection': 'Wallace Collection',
+  'the wallace collection': 'Wallace Collection',
+  'ica': 'ICA',
+  'institute of contemporary arts': 'ICA',
+  'saatchi gallery': 'Saatchi Gallery',
+  'saatchi': 'Saatchi Gallery',
+  'photographers\' gallery': 'Photographers\' Gallery',
+  'the photographers\' gallery': 'Photographers\' Gallery',
+  'photographers gallery': 'Photographers\' Gallery',
+};
+
+function normalizeMuseum(name) {
+  const lookup = name.trim().toLowerCase();
+  return MUSEUM_ALIASES[lookup] || name.trim();
+}
+
+// Normalize text for fuzzy comparison: lowercase, strip punctuation, collapse spaces
+function normalizeText(s) {
+  return s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function makeKey(ex) {
+  return normalizeMuseum(ex.Museum) + '::' + normalizeText(ex.Exhibition);
+}
+
+// Display-friendly key (uses normalized museum but original exhibition name)
+function makeDisplayMuseum(ex) {
+  return normalizeMuseum(ex.Museum);
+}
 
 async function loadDb() {
   try {
@@ -348,6 +429,37 @@ async function saveDb() {
 
 function debouncedSave() { clearTimeout(saveTimeout); saveTimeout = setTimeout(saveDb, 600); }
 
+// ─── Deduplicate existing DB entries using normalized keys ───
+function deduplicateDb() {
+  const seen = new Map();
+  let changed = false;
+
+  db.forEach(ex => {
+    // Normalize museum name
+    const normMuseum = normalizeMuseum(ex.Museum);
+    if (normMuseum !== ex.Museum) { ex.Museum = normMuseum; changed = true; }
+    // Ensure hidden field exists
+    if (ex.hidden === undefined) { ex.hidden = false; changed = true; }
+
+    const key = makeKey(ex);
+    const existing = seen.get(key);
+    if (existing) {
+      // Merge: keep visited/hidden if either had it, use latest dates
+      if (ex.visited) existing.visited = true;
+      if (ex.hidden) existing.hidden = true;
+      if (ex.ToDate > existing.ToDate) { existing.FromDate = ex.FromDate; existing.ToDate = ex.ToDate; }
+      changed = true;
+    } else {
+      seen.set(key, ex);
+    }
+  });
+
+  if (changed) {
+    db = Array.from(seen.values());
+  }
+  return changed;
+}
+
 // ─── Merge: upsert new sheet data into DB ───
 function mergeIntoDb(newExhibitions) {
   const dbMap = new Map();
@@ -358,16 +470,26 @@ function mergeIntoDb(newExhibitions) {
     const key = makeKey(ex);
     const existing = dbMap.get(key);
     if (existing) {
-      // Update dates and free status, preserve visited
+      // Update dates and free status, preserve visited/hidden
       if (existing.FromDate !== ex.FromDate || existing.ToDate !== ex.ToDate || existing['Free?'] !== ex['Free?']) {
         existing.FromDate = ex.FromDate;
         existing.ToDate = ex.ToDate;
         existing['Free?'] = ex['Free?'];
         updated++;
       }
+      // Normalize museum name on existing entries too
+      existing.Museum = normalizeMuseum(ex.Museum);
     } else {
-      // New exhibition
-      dbMap.set(key, { ...ex, visited: false });
+      // New exhibition — store with normalized museum name
+      dbMap.set(key, {
+        Museum: normalizeMuseum(ex.Museum),
+        Exhibition: ex.Exhibition.trim(),
+        FromDate: ex.FromDate,
+        ToDate: ex.ToDate,
+        'Free?': ex['Free?'],
+        visited: false,
+        hidden: false
+      });
       added++;
     }
   });
@@ -643,8 +765,14 @@ async function bootstrap() {
     setLoadingText('Loading database\u2026');
     db = await loadDb();
 
+    // Migrate: normalize museum names and deduplicate
+    let migrated = deduplicateDb();
+
     setLoadingText('Scanning for new sheets\u2026');
     await autoImport();
+
+    // Save if migration changed anything
+    if (migrated) await saveDb();
 
     show('app');
     renderAll();
