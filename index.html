@@ -377,9 +377,10 @@ function normalizeMuseum(name) {
   return MUSEUM_ALIASES[lookup] || name.trim();
 }
 
-// Normalize text for fuzzy comparison: lowercase, strip punctuation, collapse spaces
+// Normalize text for fuzzy comparison: strip trailing parenthetical (artist name),
+// lowercase, strip punctuation, collapse spaces
 function normalizeText(s) {
-  return s.toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+  return s.replace(/\s*\([^)]*\)\s*$/, '').toLowerCase().replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 }
 
 function makeKey(ex) {
@@ -444,10 +445,11 @@ function deduplicateDb() {
     const key = makeKey(ex);
     const existing = seen.get(key);
     if (existing) {
-      // Merge: keep visited/hidden if either had it, use latest dates
+      // Merge: keep visited/hidden if either had it, use latest dates, keep longer name
       if (ex.visited) existing.visited = true;
       if (ex.hidden) existing.hidden = true;
       if (ex.ToDate > existing.ToDate) { existing.FromDate = ex.FromDate; existing.ToDate = ex.ToDate; }
+      if (ex.Exhibition.length > existing.Exhibition.length) existing.Exhibition = ex.Exhibition;
       changed = true;
     } else {
       seen.set(key, ex);
@@ -479,6 +481,10 @@ function mergeIntoDb(newExhibitions) {
       }
       // Normalize museum name on existing entries too
       existing.Museum = normalizeMuseum(ex.Museum);
+      // Keep the longer (more descriptive) exhibition name
+      if (ex.Exhibition.trim().length > existing.Exhibition.length) {
+        existing.Exhibition = ex.Exhibition.trim();
+      }
     } else {
       // New exhibition — store with normalized museum name
       dbMap.set(key, {
