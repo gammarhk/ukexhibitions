@@ -141,6 +141,9 @@ main { padding: 0.8rem 1rem 4rem; }
   letter-spacing: 0.04em; color: var(--text-secondary); margin-bottom: 0.15rem;
 }
 .card-title { font-family: var(--serif); font-size: 1.05rem; line-height: 1.3; margin-bottom: 0.3rem; }
+a.card-title { color: inherit; text-decoration: none; display: block; }
+a.card-title:active { opacity: 0.6; }
+.card.visited a.card-title { text-decoration: line-through; text-decoration-color: #a09a94; }
 .card-meta { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
 .card-dates { font-size: 0.78rem; color: var(--text-secondary); }
 
@@ -452,6 +455,7 @@ function deduplicateDb() {
       if (ex.hidden) existing.hidden = true;
       if (ex.ToDate > existing.ToDate) { existing.FromDate = ex.FromDate; existing.ToDate = ex.ToDate; }
       if (ex.Exhibition.length > existing.Exhibition.length) existing.Exhibition = ex.Exhibition;
+      if (ex.Website && !existing.Website) existing.Website = ex.Website;
       changed = true;
     } else {
       seen.set(key, ex);
@@ -488,6 +492,7 @@ function deduplicateDb() {
         if (b.Museum.length > a.Museum.length) a.Museum = b.Museum;
         if (b.visited) a.visited = true;
         if (b.hidden) a.hidden = true;
+        if (b.Website && !a.Website) a.Website = b.Website;
         toRemove.add(j);
         changed = true;
       }
@@ -549,6 +554,8 @@ function mergeIntoDb(newExhibitions) {
       if (ex.Exhibition.trim().length > existing.Exhibition.length) {
         existing.Exhibition = ex.Exhibition.trim();
       }
+      // Update website if new one is provided
+      if (ex.Website) existing.Website = ex.Website;
     } else {
       // New exhibition — store with normalized museum name
       dbMap.set(key, {
@@ -557,6 +564,7 @@ function mergeIntoDb(newExhibitions) {
         FromDate: ex.FromDate,
         ToDate: ex.ToDate,
         'Free?': ex['Free?'],
+        Website: ex.Website || '',
         visited: false,
         hidden: false
       });
@@ -571,7 +579,7 @@ function mergeIntoDb(newExhibitions) {
 // ─── Read sheet data via Sheets API ───
 async function readSheetData(sheetId) {
   const sheetsRes = await fetch(
-    'https://sheets.googleapis.com/v4/spreadsheets/' + sheetId + '/values/A:E?valueRenderOption=FORMATTED_VALUE',
+    'https://sheets.googleapis.com/v4/spreadsheets/' + sheetId + '/values/A:F?valueRenderOption=FORMATTED_VALUE',
     { headers: { Authorization: 'Bearer ' + accessToken } }
   );
   if (sheetsRes.status === 401) { handleSignOut(); throw new Error('Auth expired'); }
@@ -595,7 +603,8 @@ async function readSheetData(sheetId) {
       ToDate: (r[hIdx['ToDate']] || '').trim(),
       'Free?': free === 'TRUE' || free === 'true' || free === 'Yes' || free === 'yes',
       Museum: (r[hIdx['Museum']] || '').trim(),
-      Exhibition: (r[hIdx['Exhibition']] || '').trim()
+      Exhibition: (r[hIdx['Exhibition']] || '').trim(),
+      Website: (r[hIdx['Website']] || '').trim()
     };
   });
 }
@@ -729,10 +738,14 @@ function renderCard(ex, delay) {
     ' onchange="toggleVisited(\'' + safeKey + '\',this.checked)"><label for="' + id + '">' +
     '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"/></svg></label></div>';
 
+  const title = ex.Website
+    ? '<a class="card-title" href="' + esc(ex.Website) + '" target="_blank" rel="noopener">' + esc(ex.Exhibition) + '</a>'
+    : '<div class="card-title">' + esc(ex.Exhibition) + '</div>';
+
   return '<div class="' + cardClass + '" style="animation-delay:' + delay + 'ms">' +
     checkbox +
     '<div class="card-body"><div class="card-museum">' + esc(ex.Museum) + '</div>' +
-    '<div class="card-title">' + esc(ex.Exhibition) + '</div>' +
+    title +
     '<div class="card-meta"><span class="card-dates">' + fmtDate(ex.FromDate) + ' \u2014 ' + fmtDate(ex.ToDate) + '</span>' + badges + '</div></div>' +
     actionBtn + '</div>';
 }
