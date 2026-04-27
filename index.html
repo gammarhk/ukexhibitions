@@ -350,8 +350,10 @@ const MUSEUM_ALIASES = {
   'serpentine': 'Serpentine',
   'serpentine gallery': 'Serpentine',
   'serpentine galleries': 'Serpentine',
-  'serpentine north': 'Serpentine',
-  'serpentine south': 'Serpentine',
+  'serpentine north': 'Serpentine North Gallery',
+  'serpentine north gallery': 'Serpentine North Gallery',
+  'serpentine south': 'Serpentine South Gallery',
+  'serpentine south gallery': 'Serpentine South Gallery',
   'whitechapel gallery': 'Whitechapel Gallery',
   'whitechapel': 'Whitechapel Gallery',
   'wellcome collection': 'Wellcome Collection',
@@ -456,7 +458,7 @@ function deduplicateDb() {
     }
   });
 
-  // Second pass: prefix matching within same museum + same dates
+  // Second pass: prefix matching for same dates
   const entries = Array.from(seen.values());
   const toRemove = new Set();
 
@@ -465,15 +467,25 @@ function deduplicateDb() {
     for (let j = i + 1; j < entries.length; j++) {
       if (toRemove.has(j)) continue;
       const a = entries[i], b = entries[j];
-      // Same normalized museum + same dates
-      if (normalizeMuseum(a.Museum) !== normalizeMuseum(b.Museum)) continue;
       if (a.FromDate !== b.FromDate || a.ToDate !== b.ToDate) continue;
-      // Check if one normalized name is a prefix of the other
+
+      const ma = normalizeMuseum(a.Museum).toLowerCase();
+      const mb = normalizeMuseum(b.Museum).toLowerCase();
       const na = normalizeText(a.Exhibition);
       const nb = normalizeText(b.Exhibition);
-      if (na.startsWith(nb) || nb.startsWith(na)) {
-        // Merge j into i (keep longer name)
+
+      let match = false;
+
+      // Case 1: Same museum, exhibition name prefix
+      if (ma === mb && (na.startsWith(nb) || nb.startsWith(na))) match = true;
+
+      // Case 2: Same exhibition, museum name prefix (e.g. "Serpentine" vs "Serpentine South Gallery")
+      if (na === nb && (ma.startsWith(mb) || mb.startsWith(ma))) match = true;
+
+      if (match) {
+        // Merge j into i — keep longer/more specific names
         if (b.Exhibition.length > a.Exhibition.length) a.Exhibition = b.Exhibition;
+        if (b.Museum.length > a.Museum.length) a.Museum = b.Museum;
         if (b.visited) a.visited = true;
         if (b.hidden) a.hidden = true;
         toRemove.add(j);
@@ -484,7 +496,6 @@ function deduplicateDb() {
 
   if (changed) {
     db = entries.filter((_, i) => !toRemove.has(i));
-    // Rebuild the seen map with updated keys
   }
   return changed;
 }
@@ -503,13 +514,22 @@ function mergeIntoDb(newExhibitions) {
     // Try exact key match first
     let existing = dbMap.get(key);
 
-    // Fallback: prefix match within same museum + same dates
+    // Fallback: prefix match on exhibition name (same museum, same dates)
+    // or prefix match on museum name (same exhibition, same dates)
     if (!existing) {
+      const normMuseumLower = normMuseum.toLowerCase();
       for (const dbEx of dbMap.values()) {
-        if (normalizeMuseum(dbEx.Museum) !== normMuseum) continue;
         if (dbEx.FromDate !== ex.FromDate || dbEx.ToDate !== ex.ToDate) continue;
+        const dbMuseum = normalizeMuseum(dbEx.Museum).toLowerCase();
         const dbNorm = normalizeText(dbEx.Exhibition);
-        if (dbNorm.startsWith(normExName) || normExName.startsWith(dbNorm)) {
+
+        // Case 1: same museum, exhibition name prefix
+        if (dbMuseum === normMuseumLower && (dbNorm.startsWith(normExName) || normExName.startsWith(dbNorm))) {
+          existing = dbEx;
+          break;
+        }
+        // Case 2: same exhibition, museum name prefix
+        if (dbNorm === normExName && (dbMuseum.startsWith(normMuseumLower) || normMuseumLower.startsWith(dbMuseum))) {
           existing = dbEx;
           break;
         }
@@ -524,7 +544,7 @@ function mergeIntoDb(newExhibitions) {
         existing['Free?'] = ex['Free?'];
         updated++;
       }
-      existing.Museum = normMuseum;
+      existing.Museum = normMuseum.length > existing.Museum.length ? normMuseum : existing.Museum;
       // Keep the longer (more descriptive) exhibition name
       if (ex.Exhibition.trim().length > existing.Exhibition.length) {
         existing.Exhibition = ex.Exhibition.trim();
