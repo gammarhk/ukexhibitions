@@ -125,7 +125,7 @@ main { padding: 0.8rem 1rem 4rem; }
 .card-checkbox label svg { width: 14px; height: 14px; opacity: 0; color: #fff; transition: opacity 0.15s; }
 
 .card-body { flex: 1; min-width: 0; }
-.card-actions { flex-shrink: 0; margin-top: 0.15rem; }
+.card-actions { flex-shrink: 0; margin-top: 0.15rem; display: flex; flex-direction: column; gap: 0.2rem; }
 .card-actions button {
   width: 28px; height: 28px; display: flex; align-items: center; justify-content: center;
   border: none; background: transparent; border-radius: 50%; cursor: pointer;
@@ -134,6 +134,8 @@ main { padding: 0.8rem 1rem 4rem; }
 .card-actions button:hover { color: var(--text-secondary); background: rgba(0,0,0,0.04); }
 .card-actions button:active { transform: scale(0.9); }
 .card-actions button svg { width: 16px; height: 16px; }
+.card-actions button.starred { color: #e8a838; }
+.card-actions button.starred svg { fill: #e8a838; }
 .card.hidden-card { opacity: 0.4; }
 .card.hidden-card .card-title { text-decoration: line-through; text-decoration-color: #a09a94; }
 .card-museum {
@@ -444,8 +446,9 @@ function deduplicateDb() {
     // Normalize museum name
     const normMuseum = normalizeMuseum(ex.Museum);
     if (normMuseum !== ex.Museum) { ex.Museum = normMuseum; changed = true; }
-    // Ensure hidden field exists
+    // Ensure hidden/starred fields exist
     if (ex.hidden === undefined) { ex.hidden = false; changed = true; }
+    if (ex.starred === undefined) { ex.starred = false; changed = true; }
 
     const key = makeKey(ex);
     const existing = seen.get(key);
@@ -453,6 +456,7 @@ function deduplicateDb() {
       // Merge: keep visited/hidden if either had it, use latest dates, keep longer name
       if (ex.visited) existing.visited = true;
       if (ex.hidden) existing.hidden = true;
+      if (ex.starred) existing.starred = true;
       if (ex.ToDate > existing.ToDate) { existing.FromDate = ex.FromDate; existing.ToDate = ex.ToDate; }
       if (ex.Exhibition.length > existing.Exhibition.length) existing.Exhibition = ex.Exhibition;
       if (ex.Website && !existing.Website) existing.Website = ex.Website;
@@ -492,6 +496,7 @@ function deduplicateDb() {
         if (b.Museum.length > a.Museum.length) a.Museum = b.Museum;
         if (b.visited) a.visited = true;
         if (b.hidden) a.hidden = true;
+        if (b.starred) a.starred = true;
         if (b.Website && !a.Website) a.Website = b.Website;
         toRemove.add(j);
         changed = true;
@@ -566,7 +571,8 @@ function mergeIntoDb(newExhibitions) {
         'Free?': ex['Free?'],
         Website: ex.Website || '',
         visited: false,
-        hidden: false
+        hidden: false,
+        starred: false
       });
       added++;
     }
@@ -681,6 +687,7 @@ function getFiltered() {
   if (activeFilter === 'free') list = list.filter(e => e['Free?']);
   if (activeFilter === 'visited') list = list.filter(e => e.visited);
   if (activeFilter === 'not-visited') list = list.filter(e => !e.visited);
+  if (activeFilter === 'starred') list = list.filter(e => e.starred);
   return list;
 }
 
@@ -698,9 +705,11 @@ function renderFilters() {
   const total = active.length;
   const freeCount = active.filter(e => e['Free?']).length;
   const visitedCount = active.filter(e => e.visited).length;
+  const starredCount = active.filter(e => e.starred).length;
   const hiddenCount = displayList.filter(e => e.hidden).length;
   const chips = [
     { id: 'all', label: 'All', count: total },
+    { id: 'starred', label: '\u2605 Starred', count: starredCount },
     { id: 'free', label: 'Free', count: freeCount },
     { id: 'not-visited', label: 'To Visit', count: total - visitedCount },
     { id: 'visited', label: 'Visited', count: visitedCount },
@@ -725,12 +734,18 @@ function renderCard(ex, delay) {
   const isHiddenView = activeFilter === 'hidden';
   const cardClass = isHiddenView ? 'card hidden-card' : 'card' + (ex.visited ? ' visited' : '');
 
+  // Star button
+  const starBtn = '<button class="' + (ex.starred ? 'starred' : '') + '" onclick="toggleStarred(\'' + safeKey + '\')" title="' + (ex.starred ? 'Unstar' : 'Star') + '">' +
+    '<svg viewBox="0 0 24 24" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" fill="' + (ex.starred ? 'currentColor' : 'none') + '"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/></svg></button>';
+
   // Restore button for hidden view, bin button for normal view
-  const actionBtn = isHiddenView
-    ? '<div class="card-actions"><button onclick="toggleHidden(\'' + safeKey + '\',false)" title="Restore">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1014.85-3.36L23 10"/></svg></button></div>'
-    : '<div class="card-actions"><button onclick="toggleHidden(\'' + safeKey + '\',true)" title="Hide">' +
-      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button></div>';
+  const binBtn = isHiddenView
+    ? '<button onclick="toggleHidden(\'' + safeKey + '\',false)" title="Restore">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M1 4v6h6"/><path d="M3.51 15a9 9 0 1014.85-3.36L23 10"/></svg></button>'
+    : '<button onclick="toggleHidden(\'' + safeKey + '\',true)" title="Hide">' +
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M3 6h18"/><path d="M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2"/></svg></button>';
+
+  const actionBtns = '<div class="card-actions">' + starBtn + binBtn + '</div>';
 
   // Hide checkbox in hidden view
   const checkbox = isHiddenView ? '' :
@@ -747,7 +762,7 @@ function renderCard(ex, delay) {
     '<div class="card-body"><div class="card-museum">' + esc(ex.Museum) + '</div>' +
     title +
     '<div class="card-meta"><span class="card-dates">' + fmtDate(ex.FromDate) + ' \u2014 ' + fmtDate(ex.ToDate) + '</span>' + badges + '</div></div>' +
-    actionBtn + '</div>';
+    actionBtns + '</div>';
 }
 
 function renderList() {
@@ -789,6 +804,13 @@ function toggleHidden(key, hidden) {
   renderAll();
   debouncedSave();
   showToast(hidden ? 'Exhibition hidden' : 'Exhibition restored');
+}
+
+function toggleStarred(key) {
+  const entry = db.find(ex => makeKey(ex) === key);
+  if (entry) entry.starred = !entry.starred;
+  renderAll();
+  debouncedSave();
 }
 
 // ─── UI helpers ───
