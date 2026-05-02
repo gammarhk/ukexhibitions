@@ -95,6 +95,21 @@ header {
 }
 .filter-chip.active .chip-count { background: rgba(255,255,255,0.2); }
 
+.museum-filters { margin-top: 0.4rem; }
+.museum-chip {
+  display: inline-flex; align-items: center;
+  padding: 0.3rem 0.6rem; border: 1.5px solid var(--border); border-radius: 50px;
+  background: transparent; font-family: var(--sans); font-size: 0.72rem; font-weight: 500;
+  color: var(--text-secondary); cursor: pointer; white-space: nowrap;
+  transition: all 0.15s; flex-shrink: 0;
+}
+.museum-chip.active { background: var(--accent); color: #fff; border-color: var(--accent); }
+.museum-chip .chip-count {
+  font-size: 0.65rem; background: rgba(0,0,0,0.06); padding: 0.05rem 0.35rem;
+  border-radius: 50px; margin-left: 0.2rem;
+}
+.museum-chip.active .chip-count { background: rgba(255,255,255,0.2); }
+
 main { padding: 0.8rem 1rem 4rem; }
 
 .section-label {
@@ -221,6 +236,7 @@ a.card-title:active { opacity: 0.6; }
       </div>
     </div>
     <div class="filters" id="filters"></div>
+    <div class="filters museum-filters" id="museum-filters"></div>
   </header>
   <main id="exhibition-list"></main>
   <div class="sync-bar">
@@ -248,6 +264,7 @@ let db = [];            // cumulative DB: [{Museum, Exhibition, FromDate, ToDate
 let dbFileId = null;
 let displayList = [];   // processed for display (filtered, sorted, active only)
 let activeFilter = 'not-visited';
+let activeMuseum = null; // null = all museums
 let saveTimeout = null;
 let lastImportInfo = '';
 
@@ -688,6 +705,8 @@ function getFiltered() {
   if (activeFilter === 'visited') list = list.filter(e => e.visited);
   if (activeFilter === 'not-visited') list = list.filter(e => !e.visited);
   if (activeFilter === 'starred') list = list.filter(e => e.starred);
+  // Museum filter
+  if (activeMuseum) list = list.filter(e => e.Museum === activeMuseum);
   return list;
 }
 
@@ -719,6 +738,27 @@ function renderFilters() {
     '<button class="filter-chip ' + (activeFilter === c.id ? 'active' : '') + '" onclick="setFilter(\'' + c.id + '\')">' +
       c.label + ' <span class="chip-count">' + c.count + '</span></button>'
   ).join('');
+
+  // Museum chips — count from the status-filtered list (not museum-filtered)
+  const statusFiltered = activeFilter === 'hidden' ? displayList.filter(e => e.hidden)
+    : (() => {
+        let l = active;
+        if (activeFilter === 'free') l = l.filter(e => e['Free?']);
+        if (activeFilter === 'visited') l = l.filter(e => e.visited);
+        if (activeFilter === 'not-visited') l = l.filter(e => !e.visited);
+        if (activeFilter === 'starred') l = l.filter(e => e.starred);
+        return l;
+      })();
+  const museumCounts = {};
+  statusFiltered.forEach(e => { museumCounts[e.Museum] = (museumCounts[e.Museum] || 0) + 1; });
+  const museums = Object.keys(museumCounts).sort();
+
+  document.getElementById('museum-filters').innerHTML =
+    '<button class="museum-chip ' + (!activeMuseum ? 'active' : '') + '" onclick="setMuseum(null)">All Museums</button>' +
+    museums.map(m =>
+      '<button class="museum-chip ' + (activeMuseum === m ? 'active' : '') + '" onclick="setMuseum(\'' + m.replace(/'/g, "\\'") + '\')">' +
+        esc(m) + ' <span class="chip-count">' + museumCounts[m] + '</span></button>'
+    ).join('');
 }
 
 function renderCard(ex, delay) {
@@ -790,6 +830,7 @@ function renderAll() { processForDisplay(); renderFilters(); renderList(); }
 
 // ─── Interactions ───
 function setFilter(f) { activeFilter = f; renderFilters(); renderList(); }
+function setMuseum(m) { activeMuseum = m; renderFilters(); renderList(); }
 
 function toggleVisited(key, checked) {
   const entry = db.find(ex => makeKey(ex) === key);
