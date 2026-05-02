@@ -834,7 +834,10 @@ function setMuseum(m) { activeMuseum = m; renderFilters(); renderList(); }
 
 function toggleVisited(key, checked) {
   const entry = db.find(ex => makeKey(ex) === key);
-  if (entry) entry.visited = checked;
+  if (entry) {
+    entry.visited = checked;
+    if (checked) entry.starred = false;
+  }
   renderAll();
   debouncedSave();
 }
